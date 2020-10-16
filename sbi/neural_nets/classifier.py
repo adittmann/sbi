@@ -113,6 +113,8 @@ def build_mlp_classifier(
     z_score_x: bool = True,
     z_score_y: bool = True,
     hidden_features: int = 50,
+    num_blocks: int = 2,
+    use_batch_norm: bool = False,
     embedding_net_x: nn.Module = nn.Identity(),
     embedding_net_y: nn.Module = nn.Identity(),
 ) -> nn.Module:
@@ -162,6 +164,8 @@ def build_resnet_classifier(
     z_score_x: bool = True,
     z_score_y: bool = True,
     hidden_features: int = 50,
+    num_blocks: int = 2,
+    use_batch_norm: bool = False,
     embedding_net_x: nn.Module = nn.Identity(),
     embedding_net_y: nn.Module = nn.Identity(),
 ) -> nn.Module:
@@ -175,6 +179,8 @@ def build_resnet_classifier(
         z_score_x: Whether to z-score xs passing into the network.
         z_score_y: Whether to z-score ys passing into the network.
         hidden_features: Number of hidden features.
+        num_blocks: Number of ResNet blocks.
+        use_batch_norm: Whether to use batch norm.
         embedding_net_x: Optional embedding network for x.
         embedding_net_y: Optional embedding network for y.
 
@@ -191,10 +197,10 @@ def build_resnet_classifier(
         out_features=1,
         hidden_features=hidden_features,
         context_features=None,
-        num_blocks=2,
+        num_blocks=num_blocks,
         activation=relu,
         dropout_probability=0.0,
-        use_batch_norm=False,
+        use_batch_norm=use_batch_norm,
     )
 
     input_layer = build_input_layer(

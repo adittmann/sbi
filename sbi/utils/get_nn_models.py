@@ -31,6 +31,8 @@ def classifier_nn(
     z_score_theta: bool = True,
     z_score_x: bool = True,
     hidden_features: int = 50,
+    num_blocks: int = 2,
+    use_batch_norm: bool = False,
     embedding_net_theta: nn.Module = nn.Identity(),
     embedding_net_x: nn.Module = nn.Identity(),
 ) -> Callable:
@@ -48,6 +50,8 @@ def classifier_nn(
         z_score_x: Whether to z-score simulation outputs $x$ before passing them into
             the network.
         hidden_features: Number of hidden features.
+        num_blocks: Number of blocks to use in the ResNet.
+        use_batch_norm: Whether to use batch norm in the ResNet.
         embedding_net_theta:  Optional embedding network for parameters $\theta$.
         embedding_net_x:  Optional embedding network for simulation outputs $x$. This
             embedding net allows to learn features from potentially high-dimensional
@@ -60,6 +64,8 @@ def classifier_nn(
                 "z_score_x",
                 "z_score_y",
                 "hidden_features",
+                "num_blocks",
+                "use_batch_norm",
                 "embedding_net_x",
                 "embedding_net_y",
             ),
@@ -67,6 +73,8 @@ def classifier_nn(
                 z_score_x,
                 z_score_theta,
                 hidden_features,
+                num_blocks,
+                use_batch_norm,
                 embedding_net_x,
                 embedding_net_theta,
             ),
