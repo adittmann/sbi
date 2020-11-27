@@ -21,6 +21,7 @@ from sbi.utils.sbiutils import (
     warn_on_invalid_x,
     warn_on_invalid_x_for_snpec_leakage,
     x_shape_from_simulation,
+    augment_samples,
 )
 from sbi.utils.torchutils import (
     BoxUniform,
