@@ -2,17 +2,22 @@
 from sbi.user_input.user_input_checks import (
     check_estimator_arg,
     test_posterior_net_for_multi_d_x,
+    validate_theta_and_x,
 )
 from sbi.user_input.user_input_checks_utils import MultipleIndependent
+from sbi.utils.conditional_density import (
+    conditional_corrcoeff,
+    eval_conditional_density,
+)
 from sbi.utils.get_nn_models import classifier_nn, likelihood_nn, posterior_nn
 from sbi.utils.io import get_data_root, get_log_root, get_project_root
-from sbi.utils.plot import pairplot, conditional_pairplot
+from sbi.utils.plot import conditional_pairplot, pairplot
 from sbi.utils.sbiutils import (
     batched_mixture_mv,
     batched_mixture_vmv,
     clamp_and_warn,
     del_entries,
-    get_data_since_round,
+    get_simulations_since_round,
     handle_invalid_x,
     mask_sims_from_prior,
     sample_posterior_within_prior,
@@ -47,8 +52,4 @@ from sbi.utils.typechecks import (
     is_nonnegative_int,
     is_positive_int,
     is_power_of_two,
-)
-from sbi.utils.conditional_density import (
-    eval_conditional_density,
-    conditional_corrcoeff,
 )

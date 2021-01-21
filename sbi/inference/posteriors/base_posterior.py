@@ -3,18 +3,11 @@
 
 from abc import ABC, abstractmethod
 from copy import deepcopy
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Tuple,
-)
+from math import ceil
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from math import ceil
 from pyro.infer.mcmc import HMC, NUTS
 from pyro.infer.mcmc.api import MCMC
 from torch import Tensor
@@ -23,10 +16,10 @@ from torch import nn
 
 from sbi import utils as utils
 from sbi.mcmc import (
+    IterateParameters,
     Slice,
     SliceSampler,
     SliceSamplerVectorized,
-    IterateParameters,
     prior_init,
     sir,
 )
@@ -201,6 +194,40 @@ class NeuralPosterior(ABC):
         """See child classes for docstring."""
         pass
 
+    def copy_hyperparameters_from(self, posterior: "NeuralPosterior"):
+        """
+        Copies the hyperparameters from a given posterior to `self`.
+
+        The hyperparameters that are copied are:
+
+        - Sampling parameters (MCMC for all methods, rejection sampling for SNPE).
+        - `default_x` at which to evaluate the posterior.
+
+        Args:
+            posterior: Posterior that the hyperparameters are copied from.
+        
+        Returns: Posterior object with the same hyperparameters as the passed posterior.
+            This makes the call chainable:
+            `posterior = infer.build_posterior().copy_hyperparameters_from(proposal)`
+        """
+
+        assert isinstance(
+            posterior, NeuralPosterior
+        ), "`copy_state_from` must be a `NeuralPosterior`."
+
+        self.set_mcmc_method(posterior._mcmc_method)
+        self.set_mcmc_parameters(posterior._mcmc_parameters)
+        self.set_default_x(posterior.default_x)
+        self._mcmc_init_params = posterior._mcmc_init_params
+        if hasattr(self, "_sample_with_mcmc"):
+            self.set_sample_with_mcmc(posterior._sample_with_mcmc)
+        if hasattr(self, "_rejection_sampling_parameters"):
+            self.set_rejection_sampling_parameters(
+                posterior._rejection_sampling_parameters
+            )
+
+        return self
+
     def _prepare_theta_and_x_for_log_prob_(
         self, theta: Tensor, x: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
@@ -217,7 +244,7 @@ class NeuralPosterior(ABC):
 
         Returns:
             ($\theta$, $x$) with the same batch dimension, where $x$ is repeated as
-            often as there were batch elements in $\theta$ orginally.
+            often as there were batch elements in $\theta$ originally.
         """
 
         theta = ensure_theta_batched(torch.as_tensor(theta))
@@ -384,6 +411,7 @@ class NeuralPosterior(ABC):
                     utils.tensor2numpy(initial_params[c, :]).reshape(-1),
                     lp_f=potential_function,
                     thin=thin,
+                    verbose=show_progress_bars,
                 )
                 if warmup_steps > 0:
                     posterior_sampler.gen(int(warmup_steps))
@@ -519,35 +547,6 @@ class NeuralPosterior(ABC):
             x, sample_shape, mcmc_method, mcmc_parameters
         )
 
-        class PriorWithFewerDims:
-            """
-            Prior which samples only from the free dimensions of the conditional.
-
-            This is needed for the the MCMC initialization functions when conditioning.
-            For the prior init, we could post-hoc select the relevant dimensions. But
-            for SIR, we want to evaluate the `potential_fn` of the conditional
-            posterior, which takes only a subset of the full parameter vector theta
-            (only the `dims_to_sample`). This subset is provided by `.sample()` from
-            this class.
-            """
-
-            def __init__(self, full_prior: Any):
-                self.full_prior = full_prior
-
-            def sample(self, *args, **kwargs):
-                """
-                Sample only from the relevant dimension. Other dimensions are filled in
-                by the `ConditionalPotentialFunctionProvider()` during MCMC.
-                """
-                return self.full_prior.sample(*args, **kwargs)[:, dims_to_sample]
-
-            def log_prob(self, *args, **kwargs):
-                r"""
-                `log_prob` is same as for the full prior, because we usually evaluate
-                the $\theta$ under the full joint once we have added the condition.
-                """
-                return self.full_prior.log_prob(*args, **kwargs)
-
         self.net.eval()
 
         cond_potential_fn_provider = ConditionalPotentialFunctionProvider(
@@ -560,7 +559,8 @@ class NeuralPosterior(ABC):
                 self._prior, self.net, x, mcmc_method
             ),
             init_fn=self._build_mcmc_init_fn(
-                PriorWithFewerDims(self._prior),
+                # Restrict prior to sample only free dimensions.
+                RestrictedPriorForConditional(self._prior, dims_to_sample),
                 cond_potential_fn_provider(self._prior, self.net, x, "slice_np"),
                 **mcmc_parameters,
             ),
@@ -820,3 +820,38 @@ class ConditionalPotentialFunctionProvider:
         theta_condition[:, self.dims_to_sample] = theta
 
         return self.potential_fn_provider.pyro_potential({"": theta_condition})
+
+
+class RestrictedPriorForConditional:
+    """
+    Class to restrict a prior to fewer dimensions as needed for conditional sampling.
+
+    The resulting prior samples only from the free dimensions of the conditional.
+
+    This is needed for the the MCMC initialization functions when conditioning.
+    For the prior init, we could post-hoc select the relevant dimensions. But
+    for SIR, we want to evaluate the `potential_fn` of the conditional
+    posterior, which takes only a subset of the full parameter vector theta
+    (only the `dims_to_sample`). This subset is provided by `.sample()` from
+    this class.
+    """
+
+    def __init__(
+        self, full_prior: Any, dims_to_sample: List[int],
+    ):
+        self.full_prior = full_prior
+        self.dims_to_sample = dims_to_sample
+
+    def sample(self, *args, **kwargs):
+        """
+        Sample only from the relevant dimension. Other dimensions are filled in
+        by the `ConditionalPotentialFunctionProvider()` during MCMC.
+        """
+        return self.full_prior.sample(*args, **kwargs)[:, self.dims_to_sample]
+
+    def log_prob(self, *args, **kwargs):
+        r"""
+        `log_prob` is same as for the full prior, because we usually evaluate
+        the $\theta$ under the full joint once we have added the condition.
+        """
+        return self.full_prior.log_prob(*args, **kwargs)

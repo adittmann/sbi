@@ -1,5 +1,4 @@
-
-from typing import Callable, Optional, Union, Dict, Any, Tuple, Union, cast, List, Sequence, TypeVar
+from typing import Callable, Optional, Tuple, Union
 
 import torch
 from numpy import ndarray
@@ -7,6 +6,7 @@ from pyro.distributions.empirical import Empirical
 from torch import Tensor, ones
 from torch.distributions.distribution import Distribution
 
+import sbi.utils  # Do not delete this, see #388
 from sbi.inference.abc.abc_base import ABCBASE
 from sbi.user_input.user_input_checks import process_x
 

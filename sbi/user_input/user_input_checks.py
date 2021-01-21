@@ -3,14 +3,7 @@
 
 
 import warnings
-from typing import (
-    Callable,
-    Optional,
-    Union,
-    Tuple,
-    cast,
-    Sequence,
-)
+from typing import Any, Callable, Optional, Sequence, Tuple, Union, cast
 
 import torch
 from numpy import ndarray
@@ -465,9 +458,10 @@ def prepare_for_sbi(simulator: Callable, prior,) -> Tuple[Callable, Distribution
     One of the goals is to allow you to use sbi with inputs computed in numpy.
 
     Attempts to meet the following requirements by reshaping and type-casting:
-    - the simulator function receives as input and returns a Tensor.
-    - the simulator can simulate batches of parameters and return batches of data.
-    - the prior does not produce batches and samples and evaluates to Tensor.
+
+    - the simulator function receives as input and returns a Tensor.<br/>
+    - the simulator can simulate batches of parameters and return batches of data.<br/>
+    - the prior does not produce batches and samples and evaluates to Tensor.<br/>
     - the output shape is a `torch.Size((1,N))` (i.e, has a leading batch dimension 1).
 
     If this is not possible, a suitable exception will be raised.
@@ -521,12 +515,51 @@ def check_sbi_inputs(simulator: Callable, prior: Distribution) -> None:
 
 def check_estimator_arg(estimator: Union[str, Callable]) -> None:
     """Check (density or ratio) estimator argument passed by the user."""
+    if isinstance(estimator, BoxUniform) or isinstance(estimator, Distribution):
+        raise ValueError(
+            "You passed a distribution as density_estimator. Probably, "
+            "your code is deprecated since sbi v0.14.0, which changed the "
+            "API. Please consult release notes to see how you can update your code: "
+            "https://github.com/mackelab/sbi/releases/tag/v0.14.0 "
+            "More information can be found under the corresponding pull request on "
+            "github: https://github.com/mackelab/sbi/pull/378 and tutorials: "
+            "https://www.mackelab.org/sbi/tutorial/02_flexible_interface/"
+        )
     assert isinstance(estimator, str) or (
         isinstance(estimator, Callable) and not isinstance(estimator, nn.Module)
     ), (
         "The passed density estimator / classifier must be a string or a function "
         f"returning a nn.Module, but is {type(estimator)}"
     )
+
+
+def validate_theta_and_x(theta: Any, x: Any) -> None:
+    r"""
+    Checks if the passed $(\theta, x)$ are valid.
+
+    Specifically, we check:
+    1) If they are tensors.
+    2) If they have the same batchsize.
+    3) If they are of `dtype=float32`.
+
+    Args:
+        theta: Parameters.
+        x: Simulation outputs.
+    """
+    assert isinstance(theta, Tensor), "Parameters theta must be a `Tensor`."
+    assert isinstance(x, Tensor), "Simulator output must be a `Tensor`."
+
+    assert theta.shape[0] == x.shape[0], (
+        f"Number of parameter sets (={theta.shape[0]} must match the number of "
+        f"simulation outputs (={x.shape[0]})"
+    )
+
+    # I did not fuse these asserts with the `isinstance(x, Tensor)` asserts in order
+    # to give more explicit errors.
+    assert isinstance(theta, torch.FloatTensor), "Type of parameters must be float32."
+    assert isinstance(
+        x, torch.FloatTensor
+    ), "Type of simulator outputs must be float32."
 
 
 def test_posterior_net_for_multi_d_x(net: nn.Module, theta: Tensor, x: Tensor) -> None:

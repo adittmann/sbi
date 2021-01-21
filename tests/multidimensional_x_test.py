@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from torch import zeros
-import torch
 import pytest
-from sbi import utils as utils
-from sbi.inference import SNPE, SNLE, SNRE, prepare_for_sbi
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import zeros
+
+from sbi import utils as utils
+from sbi.inference import SNLE, SNPE, SNRE, prepare_for_sbi, simulate_for_sbi
 
 
 # Minimal 2D simulator.
@@ -72,15 +73,19 @@ def test_inference_with_2d_x(embedding, method):
 
     if method == SNPE:
         net_provider = utils.posterior_nn(model="mdn", embedding_net=embedding(),)
+        sample_kwargs = {"sample_with_mcmc": True}
     elif method == SNLE:
         net_provider = utils.likelihood_nn(model="mdn", embedding_net=embedding())
+        sample_kwargs = {}
     else:
         net_provider = utils.classifier_nn(model="mlp", embedding_net_x=embedding(),)
+        sample_kwargs = {}
 
-    infer = method(simulator, prior, 1, 1, net_provider, show_progress_bars=False,)
-
-    posterior = infer(
-        num_simulations=num_simulations, training_batch_size=100, max_num_epochs=10
-    ).set_default_x(x_o)
+    inference = method(prior, density_estimator=net_provider, show_progress_bars=False)
+    theta, x = simulate_for_sbi(simulator, prior, num_simulations)
+    _ = inference.append_simulations(theta, x).train(
+        training_batch_size=100, max_num_epochs=10
+    )
+    posterior = inference.build_posterior(**sample_kwargs).set_default_x(x_o)
 
     posterior.log_prob(posterior.sample((num_samples,), show_progress_bars=False))

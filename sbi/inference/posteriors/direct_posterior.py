@@ -1,13 +1,7 @@
 # This file is part of sbi, a toolkit for simulation-based inference. sbi is licensed
 # under the Affero General Public License v3, see <https://www.gnu.org/licenses/>.
 
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    Optional,
-)
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -29,8 +23,8 @@ class DirectPosterior(NeuralPosterior):
     SNPE.<br/><br/>
     SNPE trains a neural network to directly approximate the posterior distribution.
     However, for bounded priors, the neural network can have leakage: it puts non-zero
-    mass in regions where the prior is zero. The `SnpePosterior` class wraps the trained
-    network to deal with these cases.<br/><br/>
+    mass in regions where the prior is zero. The `DirectPosterior` class wraps the
+    trained network to deal with these cases.<br/><br/>
     Specifically, this class offers the following functionality:<br/>
     - correct the calculation of the log probability such that it compensates for the
       leakage.<br/>
@@ -46,10 +40,10 @@ class DirectPosterior(NeuralPosterior):
         neural_net: nn.Module,
         prior,
         x_shape: torch.Size,
+        rejection_sampling_parameters: Optional[Dict[str, Any]] = None,
         sample_with_mcmc: bool = True,
         mcmc_method: str = "slice_np",
         mcmc_parameters: Optional[Dict[str, Any]] = None,
-        rejection_sampling_parameters: Optional[Dict[str, Any]] = None,
     ):
         """
         Args:
@@ -57,6 +51,11 @@ class DirectPosterior(NeuralPosterior):
             neural_net: A classifier for SNRE, a density estimator for SNPE and SNL.
             prior: Prior distribution with `.log_prob()` and `.sample()`.
             x_shape: Shape of a single simulator output.
+            rejection_sampling_parameters: Dictonary overriding the default parameters
+                for rejection sampling. The following parameters are supported:
+                `max_sampling_batch_size` to set the batch size for drawing new
+                samples from the candidate distribution, e.g., the posterior. Larger
+                batch size speeds up sampling.
             sample_with_mcmc: Whether to sample with MCMC. Will always be `True` for SRE
                 and SNL, but can also be set to `True` for SNPE if MCMC is preferred to
                 deal with leakage over rejection sampling.
@@ -72,11 +71,6 @@ class DirectPosterior(NeuralPosterior):
                 will draw init locations from prior, whereas `sir` will use Sequential-
                 Importance-Resampling using `init_strategy_num_candidates` to find init
                 locations.
-            rejection_sampling_parameters: Dictonary overriding the default parameters
-                for rejection sampling. The following parameters are supported:
-                `max_sampling_batch_size` to set the batch size for drawing new
-                samples from the candidate distribution, e.g., the posterior. Larger
-                batch size speeds up sampling.
         """
 
         kwargs = del_entries(
@@ -306,7 +300,7 @@ class DirectPosterior(NeuralPosterior):
                 will draw init locations from prior, whereas `sir` will use Sequential-
                 Importance-Resampling using `init_strategy_num_candidates` to find init
                 locations.
-            rejection_sampling_parameters: Dictonary overriding the default parameters
+            rejection_sampling_parameters: Dictionary overriding the default parameters
                 for rejection sampling. The following parameters are supported:
                 `max_sampling_batch_size` to set the batch size for drawing new
                 samples from the candidate distribution, e.g., the posterior. Larger
@@ -465,10 +459,17 @@ class PotentialFunctionProvider:
         theta = torch.as_tensor(theta, dtype=torch.float32)
         theta = ensure_theta_batched(theta)
         num_batch = theta.shape[0]
-        x = ensure_x_batched(self.x).repeat(num_batch, 1)
+
+        x_batched = ensure_x_batched(self.x)
+        # Repeat x over batch dim to match theta batch, accounting for multi-D x.
+        x_repeated = x_batched.repeat(
+            num_batch, *(1 for _ in range(x_batched.ndim - 1))
+        )
 
         with torch.set_grad_enabled(False):
-            target_log_prob = self.posterior_nn.log_prob(inputs=theta, context=self.x,)
+            target_log_prob = self.posterior_nn.log_prob(
+                inputs=theta, context=x_repeated,
+            )
             is_within_prior = torch.isfinite(self.prior.log_prob(theta))
             target_log_prob[~is_within_prior] = -float("Inf")
 
