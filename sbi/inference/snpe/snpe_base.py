@@ -20,7 +20,6 @@ from sbi.utils import (
     check_estimator_arg,
     x_shape_from_simulation,
     test_posterior_net_for_multi_d_x,
-    augment_samples,
 )
 
 
@@ -124,7 +123,6 @@ class PosteriorEstimator(NeuralInference, ABC):
         exclude_invalid_x: bool = True,
         discard_prior_samples: bool = False,
         retrain_from_scratch_each_round: bool = False,
-        augment=None,
     ) -> DirectPosterior:
         r"""Run SNPE.
 
@@ -178,7 +176,6 @@ class PosteriorEstimator(NeuralInference, ABC):
 
         # Run simulations for the round.
         theta, x = self._run_simulations(proposal, num_simulations)
-        theta, x = augment_samples(theta, x, augment=augment)
         self._append_to_data_bank(theta, x, self._round)
 
         # Load data from most recent round.
@@ -323,8 +320,7 @@ class PosteriorEstimator(NeuralInference, ABC):
         )
 
         optimizer = optim.Adam(
-            list(self._posterior.net.parameters()),
-            lr=learning_rate,
+            list(self._posterior.net.parameters()), lr=learning_rate,
         )
 
         epoch, self._val_log_prob = 0, float("-Inf")
@@ -348,8 +344,7 @@ class PosteriorEstimator(NeuralInference, ABC):
                 batch_loss.backward()
                 if clip_max_norm is not None:
                     clip_grad_norm_(
-                        self._posterior.net.parameters(),
-                        max_norm=clip_max_norm,
+                        self._posterior.net.parameters(), max_norm=clip_max_norm,
                     )
                 optimizer.step()
 

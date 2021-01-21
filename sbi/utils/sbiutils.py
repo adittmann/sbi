@@ -11,7 +11,6 @@ from typing import (
     Union,
 )
 
-import numpy as np
 import torch
 from pyknos.nflows import transforms
 from torch import Tensor, as_tensor
@@ -377,41 +376,3 @@ def batched_mixture_mv(matrix: Tensor, vector: Tensor) -> Tensor:
         Product (matrix * vector) of shape (batch_dim, num_components, parameter_dim).
     """
     return torch.einsum("bcij,bcj -> bci", matrix, vector)
-
-
-def augment_samples(theta, xs, augment):
-    # here, we augment the training data to obtain additional training data
-    # currently, we only try out noise-based augmentation
-    if augment is None:
-        return theta, xs
-    print("Augmenting data...", end="", sep="")
-
-    aug_fac = augment["fac"]
-    aug_scale_func = augment["scale_func"]
-
-    xs_aug = []
-    n, x_size = xs.shape
-    size = (aug_fac, x_size)
-    for p, x in zip(theta.numpy(), xs.numpy()):
-        scale = aug_scale_func(x)
-        x_aug = np.random.normal(loc=x, scale=scale, size=size)
-        xs_aug.append(x_aug)
-
-    xs_aug = np.array(xs_aug).reshape(-1, x_size)
-    theta_aug = np.repeat(theta.numpy(), aug_fac, axis=0)
-
-    assert theta_aug.ndim == xs_aug.ndim == 2, "wrong shapes!: {}, {}".format(
-        theta_aug.shape, xs_aug.shape
-    )
-    assert (
-        theta_aug.shape[0] == xs_aug.shape[0] == n * aug_fac
-    ), "not enough samples!: {}, {}".format(theta_aug.shape, xs_aug.shape)
-    assert (
-        theta_aug.shape[1] == theta.shape[1]
-    ), "theta_aug shape wrong!: {}, {}".format(theta_aug.shape, theta.shape)
-    assert xs_aug.shape[1] == xs.shape[1], "xs_aug shape wrong!: {}, {}".format(
-        xs_aug.shape, xs.shape
-    )
-    print("done\n")
-
-    return torch.Tensor(theta_aug), torch.Tensor(xs_aug)

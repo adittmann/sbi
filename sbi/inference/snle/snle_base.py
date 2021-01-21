@@ -16,7 +16,7 @@ from torch.utils.tensorboard import SummaryWriter
 from sbi import utils as utils
 from sbi.inference import NeuralInference
 from sbi.inference.posteriors.likelihood_based_posterior import LikelihoodBasedPosterior
-from sbi.utils import check_estimator_arg, x_shape_from_simulation, augment_samples
+from sbi.utils import check_estimator_arg, x_shape_from_simulation
 
 
 class LikelihoodEstimator(NeuralInference, ABC):
@@ -103,7 +103,6 @@ class LikelihoodEstimator(NeuralInference, ABC):
         exclude_invalid_x: bool = True,
         discard_prior_samples: bool = False,
         retrain_from_scratch_each_round: bool = False,
-        augment=None,
     ) -> LikelihoodBasedPosterior:
         r"""Run SNLE.
 
@@ -136,7 +135,6 @@ class LikelihoodEstimator(NeuralInference, ABC):
 
         # Run simulations for the round.
         theta, x = self._run_simulations(proposal, num_simulations)
-        theta, x = augment_samples(theta, x, augment=augment)
         self._append_to_data_bank(theta, x, self._round)
 
         # Load data from most recent round.
@@ -248,8 +246,7 @@ class LikelihoodEstimator(NeuralInference, ABC):
         )
 
         optimizer = optim.Adam(
-            list(self._posterior.net.parameters()),
-            lr=learning_rate,
+            list(self._posterior.net.parameters()), lr=learning_rate,
         )
 
         epoch, self._val_log_prob = 0, float("-Inf")
@@ -269,8 +266,7 @@ class LikelihoodEstimator(NeuralInference, ABC):
                 loss.backward()
                 if clip_max_norm is not None:
                     clip_grad_norm_(
-                        self._posterior.net.parameters(),
-                        max_norm=clip_max_norm,
+                        self._posterior.net.parameters(), max_norm=clip_max_norm,
                     )
                 optimizer.step()
 

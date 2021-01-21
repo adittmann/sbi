@@ -92,7 +92,6 @@ class SNLE_A(LikelihoodEstimator):
         exclude_invalid_x: bool = True,
         discard_prior_samples: bool = False,
         retrain_from_scratch_each_round: bool = False,
-        augment=None,
     ) -> NeuralPosterior:
         r"""Run SNLE.
 
