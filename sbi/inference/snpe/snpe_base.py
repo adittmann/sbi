@@ -4,7 +4,7 @@
 
 from abc import ABC, abstractmethod
 from copy import deepcopy
-from typing import Any, Callable, Dict, NewType, Optional, Union, cast
+from typing import Any, Callable, Dict, Optional, Union
 from warnings import warn
 
 import torch
@@ -19,6 +19,7 @@ from sbi.inference import NeuralInference, check_if_proposal_has_default_x
 from sbi.inference.posteriors.direct_posterior import DirectPosterior
 from sbi.types import TorchModule
 from sbi.utils import (
+    RestrictedPrior,
     check_estimator_arg,
     test_posterior_net_for_multi_d_x,
     validate_theta_and_x,
@@ -108,7 +109,13 @@ class PosteriorEstimator(NeuralInference, ABC):
         validate_theta_and_x(theta, x)
         self._check_proposal(proposal)
 
-        if proposal is None or proposal is self._prior:
+        if (
+            proposal is None
+            or proposal is self._prior
+            or (
+                isinstance(proposal, RestrictedPrior) and proposal._prior is self._prior
+            )
+        ):
             # The `_data_round_index` will later be used to infer if one should train
             # with MLE loss or with atomic loss (see, in `train()`:
             # self._round = max(self._data_round_index))
@@ -175,12 +182,11 @@ class PosteriorEstimator(NeuralInference, ABC):
 
         # Calibration kernels proposed in Lueckmann, Gonçalves et al., 2017.
         if calibration_kernel is None:
-            calibration_kernel = lambda x: ones([len(x)])
+            calibration_kernel = lambda x: ones([len(x)], device=self._device)
 
         max_num_epochs = 2 ** 31 - 1 if max_num_epochs is None else max_num_epochs
 
         # Load data from most recent round.
-        self._round = max(self._data_round_index)
         theta, x, _ = self.get_simulations(self._round, exclude_invalid_x, False)
 
         # First round or if retraining from scratch:
@@ -219,7 +225,7 @@ class PosteriorEstimator(NeuralInference, ABC):
         )
 
         # Dataset is shared for training and validation loaders.
-        dataset = data.TensorDataset(theta, x, prior_masks)
+        dataset = data.TensorDataset(theta, x, prior_masks,)
 
         # Create neural net and validation loaders using a subset sampler.
         train_loader = data.DataLoader(
@@ -236,6 +242,8 @@ class PosteriorEstimator(NeuralInference, ABC):
             sampler=SubsetRandomSampler(val_indices),
         )
 
+        # Move entire net to device for training.
+        self._neural_net.to(self._device)
         optimizer = optim.Adam(list(self._neural_net.parameters()), lr=learning_rate,)
 
         epoch, self._val_log_prob = 0, float("-Inf")
@@ -245,6 +253,7 @@ class PosteriorEstimator(NeuralInference, ABC):
             self._neural_net.train()
             for batch in train_loader:
                 optimizer.zero_grad()
+                # Get batches on current device.
                 theta_batch, x_batch, masks_batch = (
                     batch[0].to(self._device),
                     batch[1].to(self._device),
@@ -353,6 +362,11 @@ class PosteriorEstimator(NeuralInference, ABC):
 
         if density_estimator is None:
             density_estimator = self._neural_net
+            # If internal net is used device is defined.
+            device = self._device
+        else:
+            # Otherwise, infer it from the device of the net parameters.
+            device = next(density_estimator.parameters()).device
 
         self._posterior = DirectPosterior(
             method_family="snpe",
@@ -363,6 +377,7 @@ class PosteriorEstimator(NeuralInference, ABC):
             sample_with_mcmc=sample_with_mcmc,
             mcmc_method=mcmc_method,
             mcmc_parameters=mcmc_parameters,
+            device=device,
         )
 
         self._posterior._num_trained_rounds = self._round + 1
@@ -414,7 +429,16 @@ class PosteriorEstimator(NeuralInference, ABC):
         if proposal is not None:
             check_if_proposal_has_default_x(proposal)
 
-            if (
+            if isinstance(proposal, RestrictedPrior):
+                if proposal._prior is not self._prior:
+                    warn(
+                        "The proposal you passed is a `RestrictedPrior`, but the "
+                        "proposal distribution it uses is not the prior (it can be "
+                        "accessed via `RestrictedPrior._prior`). We do not "
+                        "recommend to mix the `RestrictedPrior` with multi-round "
+                        "SNPE."
+                    )
+            elif (
                 not isinstance(proposal, DirectPosterior)
                 and proposal is not self._prior
             ):

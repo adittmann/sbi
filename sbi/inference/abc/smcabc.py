@@ -1,7 +1,12 @@
-import logging
-from typing import Callable, Optional, Union, Tuple, Union
+from typing import (
+    Callable,
+    Optional,
+    Union,
+    Tuple,
+)
 
 import torch
+import numpy as np
 from numpy import ndarray
 from pyro.distributions import Uniform
 from pyro.distributions.empirical import Empirical
@@ -86,8 +91,6 @@ class SMCABC(ABCBASE):
         self.simulation_counter = 0
         self.num_simulations = 0
 
-        self.logger = logging.getLogger(__name__)
-
         # Define simulator that keeps track of budget.
         def simulate_with_budget(theta):
             self.simulation_counter += theta.shape[0]
@@ -103,10 +106,15 @@ class SMCABC(ABCBASE):
         num_simulations: int,
         epsilon_decay: float,
         distance_based_decay: bool = False,
-        ess_min: float = 0.5,
+        ess_min: Optional[float] = None,
         kernel_variance_scale: float = 1.0,
         use_last_pop_samples: bool = True,
         return_summary: bool = False,
+        lra: bool = False,
+        lra_with_weights: bool = False,
+        sass: bool = False,
+        sass_fraction: float = 0.25,
+        sass_expansion_degree: int = 1,
     ) -> Union[Distribution, Tuple[Distribution, dict]]:
         r"""Run SMCABC.
 
@@ -119,7 +127,8 @@ class SMCABC(ABCBASE):
             distance_based_decay: Whether the $\epsilon$ decay is constant over
                 populations or calculated from the previous populations distribution of
                 distances.
-            ess_min: Threshold of effective sampling size for resampling weights.
+            ess_min: Threshold of effective sampling size for resampling weights. Not
+                used when None (default).
             kernel_variance_scale: Factor for scaling the perturbation kernel variance.
             use_last_pop_samples: Whether to fill up the current population with
                 samples from the previous population when the budget is used up. If
@@ -127,6 +136,14 @@ class SMCABC(ABCBASE):
                 is returned.
             return_summary: Whether to return a dictionary with all accepted particles, 
                 weights, etc. at the end.
+            lra: Whether to run linear regression adjustment as in Beaumont et al. 2002
+            lra_with_weights: Whether to run lra as weighted linear regression with SMC
+                weights
+            sass: Whether to determine semi-automatic summary statistics as in
+                Fearnhead & Prangle 2012.
+            sass_fraction: Fraction of simulation budget used for the initial sass run.
+            sass_expansion_degree: Degree of the polynomial feature expansion for the
+                sass regression, default 1 - no expansion.
 
         Returns:
             posterior: Empirical posterior distribution defined by the accepted
@@ -138,8 +155,26 @@ class SMCABC(ABCBASE):
         pop_idx = 0
         self.num_simulations = num_simulations
 
+        # Pilot run for SASS.
+        if sass:
+            num_pilot_simulations = int(sass_fraction * num_simulations)
+            self.logger.info(
+                f"Running SASS with {num_pilot_simulations} pilot samples."
+            )
+            sass_transform = self.run_sass_set_xo(
+                num_particles, num_pilot_simulations, x_o, lra, sass_expansion_degree
+            )
+            # Udpate simulator and xo
+            x_o = sass_transform(self.x_o)
+
+            def sass_simulator(theta):
+                self.simulation_counter += theta.shape[0]
+                return sass_transform(self._batched_simulator(theta))
+
+            self._simulate_with_budget = sass_simulator
+
         # run initial population
-        particles, epsilon, distances = self._set_xo_and_sample_initial_population(
+        particles, epsilon, distances, x = self._set_xo_and_sample_initial_population(
             x_o, num_particles, num_initial_pop
         )
         log_weights = torch.log(1 / num_particles * ones(num_particles))
@@ -155,8 +190,9 @@ class SMCABC(ABCBASE):
         all_log_weights = [log_weights]
         all_distances = [distances]
         all_epsilons = [epsilon]
+        all_x = [x]
 
-        while self.simulation_counter < num_simulations:
+        while self.simulation_counter < self.num_simulations:
 
             pop_idx += 1
             # Decay based on quantile of distances from previous pop.
@@ -172,21 +208,22 @@ class SMCABC(ABCBASE):
             self.kernel_variance = self.get_kernel_variance(
                 all_particles[pop_idx - 1],
                 torch.exp(all_log_weights[pop_idx - 1]),
-                num_samples=1000,
+                samples_per_dim=500,
                 kernel_variance_scale=kernel_variance_scale,
             )
-            particles, log_weights, distances = self._sample_next_population(
+            particles, log_weights, distances, x = self._sample_next_population(
                 particles=all_particles[pop_idx - 1],
                 log_weights=all_log_weights[pop_idx - 1],
                 distances=all_distances[pop_idx - 1],
                 epsilon=epsilon,
+                x=all_x[pop_idx - 1],
                 use_last_pop_samples=use_last_pop_samples,
             )
 
             # Resample population if effective sampling size is too small.
-            if self.algorithm_variant == "B":
+            if ess_min is not None:
                 particles, log_weights = self.resample_if_ess_too_small(
-                    particles, log_weights, num_particles, ess_min, pop_idx
+                    particles, log_weights, ess_min, pop_idx
                 )
 
             self.logger.info(
@@ -201,8 +238,21 @@ class SMCABC(ABCBASE):
             all_log_weights.append(log_weights)
             all_distances.append(distances)
             all_epsilons.append(epsilon)
+            all_x.append(x)
 
-        posterior = Empirical(all_particles[-1], log_weights=all_log_weights[-1])
+        # Maybe run LRA and adjust weights.
+        if lra:
+            self.logger.info("Running Linear regression adjustment.")
+            adjusted_particels, adjusted_weights = self.run_lra_update_weights(
+                particles=all_particles[-1],
+                xs=all_x[-1],
+                observation=x_o,
+                log_weights=all_log_weights[-1],
+                lra_with_weights=lra_with_weights,
+            )
+            posterior = Empirical(adjusted_particels, log_weights=adjusted_weights)
+        else:
+            posterior = Empirical(all_particles[-1], log_weights=all_log_weights[-1])
 
         if return_summary:
             return (
@@ -212,6 +262,7 @@ class SMCABC(ABCBASE):
                     weights=all_log_weights,
                     epsilons=all_epsilons,
                     distances=all_distances,
+                    xs=all_x,
                 ),
             )
         else:
@@ -242,7 +293,12 @@ class SMCABC(ABCBASE):
         if not torch.isfinite(initial_epsilon):
             initial_epsilon = 1e8
 
-        return particles, initial_epsilon, distances[sortidx][:num_particles]
+        return (
+            particles,
+            initial_epsilon,
+            distances[sortidx][:num_particles],
+            x[sortidx][:num_particles],
+        )
 
     def _sample_next_population(
         self,
@@ -250,6 +306,7 @@ class SMCABC(ABCBASE):
         log_weights: Tensor,
         distances: Tensor,
         epsilon: float,
+        x: Tensor,
         use_last_pop_samples: bool = True,
     ) -> Tuple[Tensor, Tensor, Tensor]:
         """Return particles, weights and distances of new population."""
@@ -257,6 +314,7 @@ class SMCABC(ABCBASE):
         new_particles = []
         new_log_weights = []
         new_distances = []
+        new_x = []
 
         num_accepted_particles = 0
         num_particles = particles.shape[0]
@@ -274,8 +332,8 @@ class SMCABC(ABCBASE):
                 particles, torch.exp(log_weights), num_samples=num_batch
             )
             # Simulate and select based on distance.
-            x = self._simulate_with_budget(particle_candidates)
-            dists = self.distance(self.x_o, x)
+            x_candidates = self._simulate_with_budget(particle_candidates)
+            dists = self.distance(self.x_o, x_candidates)
             is_accepted = dists <= epsilon
             num_accepted_batch = is_accepted.sum().item()
 
@@ -287,6 +345,7 @@ class SMCABC(ABCBASE):
                     )
                 )
                 new_distances.append(dists[is_accepted])
+                new_x.append(x_candidates[is_accepted])
                 num_accepted_particles += num_accepted_batch
 
             # If simulation budget was exceeded and we still need particles, take
@@ -311,6 +370,7 @@ class SMCABC(ABCBASE):
                         )
                     ]
                     new_distances.append(distances[:num_remaining])
+                    new_x.append(x[:num_remaining])
                 else:
                     self.logger.info(
                         "Simulation Budget exceeded, returning previous population."
@@ -318,6 +378,7 @@ class SMCABC(ABCBASE):
                     new_particles = [particles]
                     new_log_weights = [log_weights]
                     new_distances = [distances]
+                    new_x = [x]
 
                 break
 
@@ -325,11 +386,20 @@ class SMCABC(ABCBASE):
         new_particles = torch.cat(new_particles)
         new_log_weights = torch.cat(new_log_weights)
         new_distances = torch.cat(new_distances)
+        new_x = torch.cat(new_x)
 
         # normalize the new weights
         new_log_weights -= torch.logsumexp(new_log_weights, dim=0)
 
-        return new_particles, new_log_weights, new_distances
+        # Return sorted wrt distances.
+        sort_idx = torch.argsort(new_distances)
+
+        return (
+            new_particles[sort_idx],
+            new_log_weights[sort_idx],
+            new_distances[sort_idx],
+            new_x[sort_idx],
+        )
 
     def _get_next_epsilon(self, distances: Tensor, quantile: float) -> float:
         """Return epsilon for next round based on quantile of this round's distances.
@@ -433,45 +503,41 @@ class SMCABC(ABCBASE):
         self,
         particles: Tensor,
         weights: Tensor,
-        num_samples: int = 1000,
+        samples_per_dim: int = 100,
         kernel_variance_scale: float = 1.0,
     ) -> Tensor:
-
-        # get weighted samples
-        samples = self.sample_from_population_with_weights(
-            particles, weights, num_samples=num_samples
-        )
 
         if self.kernel == "gaussian":
             # For variant C, Beaumont et al. 2009, the kernel variance comes from the
             # previous population.
             if self.algorithm_variant == "C":
-                mean = torch.mean(samples, dim=0).unsqueeze(0)
-
-                # take double the weighted sample cov as proposed in Beaumont 2009
-                population_cov = torch.matmul(samples.T, samples) / (
-                    num_samples - 1
-                ) - torch.matmul(mean.T, mean)
+                # Calculate weighted covariance of particles.
+                population_cov = torch.tensor(
+                    np.atleast_2d(np.cov(particles, rowvar=False, aweights=weights)),
+                    dtype=torch.float32,
+                )
+                # Make sure variance is nonsingular.
+                try:
+                    torch.cholesky(kernel_variance_scale * population_cov)
+                except RuntimeError:
+                    self.logger.warning(
+                        """"Singular particle covariance, using unit covariance."""
+                    )
+                    population_cov = torch.eye(particles.shape[1])
                 return kernel_variance_scale * population_cov
             # While for Toni et al. and Sisson et al. it comes from the parameter
             # ranges.
             elif self.algorithm_variant in ("A", "B"):
-                # Variance spans the range of parameters for every dimension.
-                parameter_ranges = tensor(
-                    [
-                        max(theta_column) - min(theta_column)
-                        for theta_column in samples.T
-                    ]
+                particle_ranges = self.get_particle_ranges(
+                    particles, weights, samples_per_dim=samples_per_dim
                 )
-                assert parameter_ranges.ndim < 2
-                return kernel_variance_scale * torch.diag(parameter_ranges)
+                return kernel_variance_scale * torch.diag(particle_ranges)
             else:
                 raise ValueError(f"Variant, '{self.algorithm_variant}' not supported.")
-
         elif self.kernel == "uniform":
             # Variance spans the range of parameters for every dimension.
-            return kernel_variance_scale * tensor(
-                [max(theta_column) - min(theta_column) for theta_column in samples.T]
+            return kernel_variance_scale * self.get_particle_ranges(
+                particles, weights, samples_per_dim=samples_per_dim
             )
         else:
             raise ValueError(f"Kernel, '{self.kernel}' not supported.")
@@ -495,25 +561,97 @@ class SMCABC(ABCBASE):
             raise ValueError(f"Kernel, '{self.kernel}' not supported.")
 
     def resample_if_ess_too_small(
-        self,
-        particles: Tensor,
-        log_weights: Tensor,
-        num_particles: int,
-        ess_min: float,
-        pop_idx: int,
+        self, particles: Tensor, log_weights: Tensor, ess_min: float, pop_idx: int,
     ) -> Tuple[Tensor, Tensor]:
         """Return resampled particles and uniform weights if effectice sampling size is
         too small.
         """
 
+        num_particles = particles.shape[0]
         ess = (1 / torch.sum(torch.exp(2.0 * log_weights), dim=0)) / num_particles
         # Resampling of weights for low ESS only for Sisson et al. 2007.
         if ess < ess_min:
             self.logger.info(f"ESS={ess:.2f} too low, resampling pop {pop_idx}...")
-            # First resample, then set to uniform weights in in Sisson et al. 2007.
+            # First resample, then set to uniform weights as in Sisson et al. 2007.
             particles = self.sample_from_population_with_weights(
                 particles, torch.exp(log_weights), num_samples=num_particles
             )
             log_weights = torch.log(1 / num_particles * ones(num_particles))
 
         return particles, log_weights
+
+    def run_lra_update_weights(
+        self,
+        particles: Tensor,
+        xs: Tensor,
+        observation: Tensor,
+        log_weights: Tensor,
+        lra_with_weights: bool,
+    ) -> Tuple[Tensor, Tensor]:
+        """Return particles and weights adjusted with LRA.
+
+        Runs (weighted) linear regression from xs onto particles to adjust the
+        particles.
+
+        Updates the SMC weights according to the new particles.
+        """
+
+        adjusted_particels = self.run_lra(
+            theta=particles,
+            x=xs,
+            observation=observation,
+            sample_weight=log_weights.exp() if lra_with_weights else None,
+        )
+
+        # Update SMC weights with LRA adjusted weights
+        adjusted_log_weights = self._calculate_new_log_weights(
+            new_particles=adjusted_particels,
+            old_particles=particles,
+            old_log_weights=log_weights,
+        )
+
+        return adjusted_particels, adjusted_log_weights
+
+    def run_sass_set_xo(
+        self,
+        num_particles: int,
+        num_pilot_simulations: int,
+        x_o,
+        lra: bool = False,
+        sass_expansion_degree: int = 1,
+    ) -> Callable:
+        """Return transform for semi-automatic summary statistics.
+
+        Runs an single round of rejection abc with fixed budget and accepts 
+        num_particles simulations to run the regression for sass.
+
+        Sets self.x_o once the x_shape can be derived from simulations.
+        """
+        (pilot_particles, _, _, pilot_xs,) = self._set_xo_and_sample_initial_population(
+            x_o, num_particles, num_pilot_simulations
+        )
+        # Adjust with LRA.
+        if lra:
+            pilot_particles = self.run_lra(pilot_particles, pilot_xs, self.x_o)
+        sass_transform = self.get_sass_transform(
+            pilot_particles,
+            pilot_xs,
+            expansion_degree=sass_expansion_degree,
+            sample_weight=None,
+        )
+        return sass_transform
+
+    def get_particle_ranges(
+        self, particles: Tensor, weights: Tensor, samples_per_dim: int = 100
+    ) -> Tensor:
+        """Return range of particles in each parameter dimension."""
+
+        # get weighted samples
+        samples = self.sample_from_population_with_weights(
+            particles, weights, num_samples=samples_per_dim * particles.shape[1],
+        )
+
+        # Variance spans the range of particles for every dimension.
+        particle_ranges = tensor([max(column) - min(column) for column in samples.T])
+        assert particle_ranges.ndim < 2
+        return particle_ranges

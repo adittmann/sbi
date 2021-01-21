@@ -18,7 +18,6 @@ from sbi.simulators.linear_gaussian import (
     samples_true_posterior_linear_gaussian_uniform_prior,
     true_posterior_linear_gaussian_mvn_prior,
 )
-from sbi.utils.torchutils import configure_default_device
 from tests.test_utils import (
     check_c2st,
     get_dkl_gaussian_prior,
@@ -39,8 +38,6 @@ def test_c2st_snpe_on_linearGaussian(
         set_seed: fixture for manual seeding
     """
 
-    device = "cpu"
-    configure_default_device(device)
     x_o = zeros(1, num_dim)
     num_samples = 1000
 
@@ -66,7 +63,7 @@ def test_c2st_snpe_on_linearGaussian(
         return linear_gaussian(theta, likelihood_shift, likelihood_cov)
 
     simulator, prior = prepare_for_sbi(simulator, prior)
-    inference = SNPE_C(prior, show_progress_bars=False, device=device,)
+    inference = SNPE_C(prior, show_progress_bars=False,)
 
     theta, x = simulate_for_sbi(simulator, prior, 2000, simulation_batch_size=1000)
     _ = inference.append_simulations(theta, x).train(training_batch_size=100)
@@ -328,8 +325,6 @@ def test_sample_conditional(set_seed):
     dim_to_sample_1 = 0
     dim_to_sample_2 = 2
 
-    device = "cpu"
-    configure_default_device(device)
     x_o = zeros(1, num_dim)
 
     likelihood_shift = -1.0 * ones(num_dim)
@@ -346,9 +341,7 @@ def test_sample_conditional(set_seed):
     net = utils.posterior_nn("maf", hidden_features=20)
 
     simulator, prior = prepare_for_sbi(simulator, prior)
-    inference = SNPE_C(
-        prior, density_estimator=net, show_progress_bars=False, device=device,
-    )
+    inference = SNPE_C(prior, density_estimator=net, show_progress_bars=False,)
 
     # We need a pretty big dataset to properly model the bimodality.
     theta, x = simulate_for_sbi(simulator, prior, 10000)

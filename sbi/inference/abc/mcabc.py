@@ -63,6 +63,11 @@ class MCABC(ABCBASE):
         eps: Optional[float] = None,
         quantile: Optional[float] = None,
         return_distances: bool = False,
+        return_x_accepted: bool = False,
+        lra: bool = False,
+        sass: bool = False,
+        sass_fraction: float = 0.25,
+        sass_expansion_degree: int = 1,
     ) -> Union[Distribution, Tuple[Distribution, Tensor]]:
         r"""Run MCABC.
 
@@ -74,8 +79,17 @@ class MCABC(ABCBASE):
             quantile: Upper quantile of smallest distances for which the corresponding
                 parameters are returned, e.g, q=0.01 will return the top 1%. Exactly
                 one of quantile or `eps` have to be passed.
-            return_distances: Whether to return the distances corresponding to the
-                selected parameters.
+            return_distances: Whether to return the distances corresponding to
+                the accepted parameters.
+            return_distances: Whether to return the simulated data corresponding to
+                the accepted parameters.
+            lra: Whether to run linear regression adjustment as in Beaumont et al. 2002
+            sass: Whether to determine semi-automatic summary statistics as in
+                Fearnhead & Prangle 2012.
+            sass_fraction: Fraction of simulation budget used for the initial sass run.
+            sass_expansion_degree: Degree of the polynomial feature expansion for the
+                sass regression, default 1 - no expansion.
+
         Returns:
             posterior: Empirical distribution based on selected parameters.
             distances: Tensor of distances of the selected parameters.
@@ -85,9 +99,29 @@ class MCABC(ABCBASE):
             quantile is not None
         ), "Eps or quantile must be passed, but not both."
 
+        # Run SASS and change the simulator and x_o accordingly.
+        if sass:
+            num_pilot_simulations = int(sass_fraction * num_simulations)
+            self.logger.info(
+                f"Running SASS with {num_pilot_simulations} pilot samples."
+            )
+            num_simulations -= num_pilot_simulations
+
+            pilot_theta = self.prior.sample((num_pilot_simulations,))
+            pilot_x = self._batched_simulator(pilot_theta)
+
+            sass_transform = self.get_sass_transform(
+                pilot_theta, pilot_x, sass_expansion_degree
+            )
+
+            simulator = lambda theta: sass_transform(self._batched_simulator(theta))
+            x_o = sass_transform(x_o)
+        else:
+            simulator = self._batched_simulator
+
         # Simulate and calculate distances.
         theta = self.prior.sample((num_simulations,))
-        x = self._batched_simulator(theta)
+        x = simulator(theta)
 
         # Infer shape of x to test and set x_o.
         self.x_shape = x[0].unsqueeze(0).shape
@@ -103,6 +137,7 @@ class MCABC(ABCBASE):
 
             theta_accepted = theta[is_accepted]
             distances_accepted = distances[is_accepted]
+            x_accepted = x[is_accepted]
 
         # Select based on quantile on sorted distances.
         elif quantile is not None:
@@ -110,13 +145,27 @@ class MCABC(ABCBASE):
             sort_idx = torch.argsort(distances)
             theta_accepted = theta[sort_idx][:num_top_samples]
             distances_accepted = distances[sort_idx][:num_top_samples]
+            x_accepted = x[sort_idx][:num_top_samples]
 
         else:
             raise ValueError("One of epsilon or quantile has to be passed.")
 
-        posterior = Empirical(theta_accepted, log_weights=ones(theta_accepted.shape[0]))
+        # Maybe adjust theta with LRA.
+        if lra:
+            self.logger.info("Running Linear regression adjustment.")
+            theta_adjusted = self.run_lra(
+                theta_accepted, x_accepted, observation=self.x_o
+            )
+        else:
+            theta_adjusted = theta_accepted
 
+        posterior = Empirical(theta_adjusted, log_weights=ones(theta_accepted.shape[0]))
+
+        if return_distances and return_x_accepted:
+            return posterior, distances_accepted, x_accepted
         if return_distances:
             return posterior, distances_accepted
+        if return_x_accepted:
+            return posterior, x_accepted
         else:
             return posterior
