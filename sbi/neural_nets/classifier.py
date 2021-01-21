@@ -128,6 +128,8 @@ def build_mlp_classifier(
         z_score_x: Whether to z-score xs passing into the network.
         z_score_y: Whether to z-score ys passing into the network.
         hidden_features: Number of hidden features.
+        num_blocks: Number of blocks,
+        use_batch_norm: Whether to use batch normalization,
         embedding_net_x: Optional embedding network for x.
         embedding_net_y: Optional embedding network for y.
 
@@ -139,15 +141,17 @@ def build_mlp_classifier(
     x_numel = embedding_net_x(batch_x[:1]).numel()
     y_numel = embedding_net_y(batch_y[:1]).numel()
 
-    neural_net = nn.Sequential(
-        nn.Linear(x_numel + y_numel, hidden_features),
-        nn.BatchNorm1d(hidden_features),
-        nn.ReLU(),
-        nn.Linear(hidden_features, hidden_features),
-        nn.BatchNorm1d(hidden_features),
-        nn.ReLU(),
-        nn.Linear(hidden_features, 1),
-    )
+    modules = []
+    in_size = x_numel + y_numel
+    for _ in range(num_blocks):
+        modules.append(nn.Linear(in_size, hidden_features))
+        if use_batch_norm:
+            modules.append(nn.BatchNorm1d(hidden_features))
+        modules.append(nn.ReLU())
+        in_size = hidden_features
+    modules.append(nn.Linear(in_size, 1))
+
+    neural_net = nn.Sequential(*modules)
 
     input_layer = build_input_layer(
         batch_x, batch_y, z_score_x, z_score_y, embedding_net_x, embedding_net_y
