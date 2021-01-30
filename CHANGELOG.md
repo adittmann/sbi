@@ -1,6 +1,20 @@
+# v0.15.0
+
+## Major changes
+- Active subspaces for sensitivity analysis (#394, [tutorial](https://www.mackelab.org/sbi/tutorial/09_sensitivity_analysis/))
+
+## API changes
+- `pairplot()`, `conditional_pairplot()`, and `conditional_corrcoeff()` should now be imported from `sbi.analysis` instead of `sbi.utils` (#394).
+- Changed `fig_size` to `figsize` in pairplot (#394).
+
+## Minor changes
+- Depend on new `joblib=1.0.0` and fix progress bar updates for multiprocessing (#421).
+
+
 # v0.14.3
 
 - Fixup for conditional correlation matrix (thanks @JBeckUniTb, #404)
+- z-score data using only the training data (#411)
 
 
 # v0.14.2
