@@ -17,13 +17,12 @@ class StandardizeInputs(nn.Module):
         self.dim_x = dim_x
         self.dim_y = dim_y
 
-    def forward(self, t):
+    def forward(self, inputs: list) -> Tensor:
+        assert (
+            type(inputs) is list and len(inputs) == 2
+        ), """Inputs to (s)nre classifier must be a list containing raw theta and x."""
         out = torch.cat(
-            [
-                self.embedding_net_x(t[:, : self.dim_x]),
-                self.embedding_net_y(t[:, self.dim_x : self.dim_x + self.dim_y]),
-            ],
-            dim=1,
+            [self.embedding_net_x(inputs[0]), self.embedding_net_y(inputs[1]),], dim=1,
         )
         return out
 
